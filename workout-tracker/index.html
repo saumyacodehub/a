@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Workout Tracker</title>
+<style>
+  :root{--bg:#0f1115;--card:#181b22;--fg:#e8eaf0;--mut:#8a90a0;--acc:#4ade80;--bd:#272b35}
+  @media (prefers-color-scheme: light){:root{--bg:#f4f5f7;--card:#fff;--fg:#14161a;--mut:#6b7280;--acc:#16a34a;--bd:#e3e5ea}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,sans-serif}
+  main{max-width:640px;margin:0 auto;padding:16px}
+  h1{font-size:1.4rem;margin:8px 0 16px}
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:16px}
+  label{display:block;font-size:.8rem;color:var(--mut);margin:12px 0 4px}
+  input,select,textarea,button{width:100%;font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:10px}
+  .row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  button{background:var(--acc);color:#04210f;font-weight:600;border:0;margin-top:16px;cursor:pointer}
+  button:disabled{opacity:.6}
+  #msg{margin-top:8px;font-size:.9rem;min-height:1.2em}
+  .err{color:#f87171}.ok{color:var(--acc)}
+  table{width:100%;border-collapse:collapse;font-size:.9rem}
+  th,td{text-align:left;padding:6px 4px;border-bottom:1px solid var(--bd)}
+  th{color:var(--mut);font-weight:500}
+  .filter{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+  .stat{color:var(--mut);font-size:.85rem;margin:4px 0 8px}
+  .hide{display:none}
+</style>
+</head>
+<body>
+<main>
+  <h1>🏋️ Workout Tracker</h1>
+
+  <div class="card hide" id="setup">
+    <strong>One-time setup</strong>
+    <label for="url">Apps Script Web App URL (see README)</label>
+    <input id="url" placeholder="https://script.google.com/macros/s/.../exec">
+    <button id="saveUrl" type="button">Save URL</button>
+  </div>
+
+  <form class="card" id="form">
+    <label for="date">Date</label>
+    <input type="date" id="date" required>
+
+    <label for="exSel">Exercise</label>
+    <select id="exSel"></select>
+    <input id="exNew" class="hide" placeholder="New exercise name" style="margin-top:8px">
+
+    <div class="row">
+      <div><label for="weight">Weight (kg)</label><input id="weight" type="number" step="0.25" min="0" inputmode="decimal" required></div>
+      <div><label for="reps">Reps</label><input id="reps" type="number" min="0" inputmode="numeric"></div>
+      <div><label for="sets">Sets</label><input id="sets" type="number" min="0" inputmode="numeric"></div>
+    </div>
+
+    <label for="notes">Notes (optional)</label>
+    <textarea id="notes" rows="2"></textarea>
+
+    <button id="submit" type="submit">Save entry</button>
+    <div id="msg"></div>
+  </form>
+
+  <div class="card">
+    <div class="filter">
+      <select id="filter"></select>
+    </div>
+    <div class="stat" id="stat"></div>
+    <table>
+      <thead><tr><th>Date</th><th>Exercise</th><th>kg</th><th>Reps</th><th>Sets</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const DEFAULT_EXERCISES = ['Bench Press','Squat','Deadlift','Overhead Press','Barbell Row','Pull-ups','Bicep Curl','Tricep Pushdown','Leg Press','Body Weight'];
+const $ = id => document.getElementById(id);
+let entries = [];
+const today = () => { const d = new Date(); d.setMinutes(d.getMinutes()-d.getTimezoneOffset()); return d.toISOString().slice(0,10); };
+const getUrl = () => (window.APPS_SCRIPT_URL || localStorage.getItem('wt_url') || '').trim();
+
+function setMsg(t, cls){ $('msg').textContent = t; $('msg').className = cls||''; }
+function esc(s){ return String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function exerciseList(){
+  const set = new Set(DEFAULT_EXERCISES);
+  entries.forEach(e => set.add(e.exercise));
+  return [...set].sort();
+}
+function renderSelects(){
+  const list = exerciseList();
+  const cur = $('exSel').value;
+  $('exSel').innerHTML = list.map(x=>`<option>${esc(x)}</option>`).join('') + '<option value="__new">➕ Add new exercise…</option>';
+  if (cur && [...$('exSel').options].some(o=>o.value===cur)) $('exSel').value = cur;
+  const f = $('filter').value || '__all';
+  $('filter').innerHTML = '<option value="__all">All exercises</option>' + list.map(x=>`<option>${esc(x)}</option>`).join('');
+  $('filter').value = [...$('filter').options].some(o=>o.value===f) ? f : '__all';
+}
+function renderTable(){
+  const f = $('filter').value;
+  const rows = entries.filter(e => f==='__all' || e.exercise===f)
+    .sort((a,b)=> a.date<b.date?1:a.date>b.date?-1:0);
+  $('rows').innerHTML = rows.slice(0,100).map(e =>
+    `<tr><td>${esc(e.date)}</td><td>${esc(e.exercise)}</td><td>${esc(e.weight)}</td><td>${esc(e.reps)}</td><td>${esc(e.sets)}</td></tr>`).join('')
+    || '<tr><td colspan="5" style="color:var(--mut)">No entries yet</td></tr>';
+  if (f !== '__all' && rows.length){
+    const w = rows.map(r=>Number(r.weight));
+    const first = rows[rows.length-1], last = rows[0];
+    const diff = (Number(last.weight)-Number(first.weight)).toFixed(2).replace(/\.?0+$/,'');
+    $('stat').textContent = `Best: ${Math.max(...w)} kg · Latest: ${last.weight} kg · Change since first: ${diff>0?'+':''}${diff} kg`;
+  } else $('stat').textContent = '';
+}
+
+async function load(){
+  const url = getUrl();
+  $('setup').classList.toggle('hide', !!url);
+  renderSelects(); renderTable();
+  if (!url) return;
+  try {
+    const r = await fetch(url);
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error);
+    entries = j.entries;
+    renderSelects(); renderTable();
+  } catch(e){ setMsg('Could not load data: '+e.message, 'err'); }
+}
+
+$('exSel').addEventListener('change', () => $('exNew').classList.toggle('hide', $('exSel').value!=='__new'));
+$('filter').addEventListener('change', renderTable);
+$('saveUrl').addEventListener('click', () => {
+  const v = $('url').value.trim();
+  if (!/^https:\/\/script\.google\.com\//.test(v)) return alert('Paste the Web App URL ending in /exec');
+  localStorage.setItem('wt_url', v); load();
+});
+
+$('form').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const url = getUrl();
+  if (!url) return setMsg('Set the Web App URL first.', 'err');
+  const exercise = $('exSel').value==='__new' ? $('exNew').value.trim() : $('exSel').value;
+  if (!exercise) return setMsg('Enter an exercise name.', 'err');
+  const entry = { date:$('date').value, exercise, weight:$('weight').value, reps:$('reps').value, sets:$('sets').value, notes:$('notes').value.trim() };
+  $('submit').disabled = true; setMsg('Saving…');
+  try {
+    // text/plain avoids CORS preflight, which Apps Script doesn't support
+    const r = await fetch(url, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify(entry) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error);
+    entries.push(entry);
+    ['weight','reps','sets','notes','exNew'].forEach(i=>$(i).value='');
+    $('exNew').classList.add('hide');
+    renderSelects(); $('exSel').value = exercise; renderTable();
+    setMsg('Saved ✓', 'ok');
+  } catch(e){ setMsg('Save failed: '+e.message, 'err'); }
+  finally { $('submit').disabled = false; }
+});
+
+$('date').value = today();
+load();
+</script>
+</body>
+</html>
